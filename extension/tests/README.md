@@ -3,21 +3,50 @@
 From the repository root, with Node.js 22 or newer:
 
 ```sh
-node --test extension/tests/archival.test.cjs
+node --test extension/tests/archival.test.cjs extension/tests/idbp.test.cjs
 ```
 
-The tests execute the actual extension persistence, local-storage, base, and issue-accumulator sources in a VM. Browser storage and HTTP requests are mocked. They cover bounded parallel submission, payload budgets, oversized records, serial opt-out, mixed archival methods, successful acknowledgements before deletion, failure recovery, pausing, endpoint changes, scheduler priority, and local-storage metadata bookkeeping.
+The 15 tests execute actual extension sources. Browser storage and HTTP boundaries are mocked. They cover bounded submission, payload budgets, oversized records, serial opt-out, mixed archival methods, acknowledgements before deletion, failure recovery, pauses, endpoint changes, scheduler priority, metadata bookkeeping, IndexedDB abort handling. One test exercises 32 deterministic combinations of request timing, HTTP errors, connection failures, metadata-write failures, removal failures.
 
-Build a Firefox MV2 package with the existing build toolchain:
+## Real Firefox storage and crash tests
+
+`browser-safety.cjs` generates a disposable Firefox extension using the persistence helpers from this checkout. It runs against real `browser.storage.local` and IndexedDB. Captures are synthetic 32-byte payloads; a separate localhost HTTP server validates their contents, writes them to a temporary directory, calls `fsync` on the files, acknowledges them.
+
+Install `web-ext` in a separate tooling directory. On Linux:
+
+```sh
+WEB_EXT_MODULE=/absolute/path/to/web-ext/bin/web-ext.js \
+FIREFOX_PATH=/absolute/path/to/firefox \
+RESULT_FILE=/tmp/hoardy-safety-results.json \
+node extension/tests/browser-safety.cjs
+```
+
+The runner creates its own temporary profile. It kills only its own process group for crash tests, restarts Firefox with that profile, reinstalls the same temporary test extension, checks retained records through the real storage traversal helper. It never installs Hoardy-Web or accesses an existing browser profile.
+
+Fourteen cases cover:
+
+- Successful uploads using each storage backend.
+- HTTP errors using each backend.
+- Injected local-storage metadata-write and removal errors.
+- Serial behavior for mixed HTTP/local archival.
+- Pause and endpoint changes during preparation.
+- Explicit IndexedDB abort, asynchronous transaction callback failure.
+- Process crashes before cleanup, between metadata commit and removal, after removal before counter/ID finalization.
+
+The conservation check requires every capture to remain discoverable with its payload locally, or have been written to the test server. Failed uploads must retain their local copies. Other checks cover payload contents, concurrency, counters, batch counts, outstanding uploads.
+
+### Limits
+
+This harness exercises the actual persistence helpers, real storage engines, real HTTP requests. Other background components, including UI updates, loggable normalization, the full scheduler, are stubbed. It checks storage discovery after process restart; it does not run the entire application's startup/recovery sequence.
+
+These tests do not simulate machine power loss, storage hardware failure, every scheduler interleaving, or every combination of export/re-archival/stashing. They establish behavior for the tested cases. End-to-end power-loss safety requires the archive server's acknowledgement to guarantee durable storage. The process-crash tests keep the test server and operating system running.
+
+`storage.local` still commits metadata and record removal separately. Acknowledged uploads may be repeated after an interrupted batch. The payload budget excludes browser/network bookkeeping overhead.
+
+## Building
 
 ```sh
 git submodule update --init vendor/pako
 cd extension
 ./build.sh firefox-mv2
 ```
-
-For manual integration testing, use a disposable Firefox profile and an isolated archive directory. Enable HTTP-only archival, set `HTTP upload batch size` to 4, queue test captures, and compare upload throughput with batch size 1. Verify local counters and archive contents after completion. Test HTTP errors, server outages, pause/resume, and a browser restart with a partially processed queue. Repeat with `Prefer IndexedDB API` both enabled and disabled.
-
-The default batch size remains 1. Re-archival and mixed-method archival retain serial behavior. A pause or endpoint change during a prepared batch may cause acknowledged uploads to be sent again; disk copies remain available until successful finalization. The payload budget describes uncompressed captures and excludes browser/network bookkeeping overhead.
-
-`storage.local` still uses separate metadata-write and record-removal calls, matching the existing persistence implementation. These tests do not establish crash atomicity for that API. Native browser lifecycle and actual IndexedDB integration remain manual checks before release.

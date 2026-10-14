@@ -49,10 +49,13 @@ function fixture(options = {}) {
                         );
                     },
                     async set(values) {
+                        if (options.beforeSet) await options.beforeSet(c, values);
                         Object.assign(db, structuredClone(values));
+                        if (options.afterSet) await options.afterSet(c, values);
                     },
                     async remove(keys) {
                         removeCalls++;
+                        if (options.beforeRemove) await options.beforeRemove(c, keys);
                         if (failRemove) {
                             failRemove = false;
                             throw new Error("simulated disk failure");
@@ -81,7 +84,9 @@ function fixture(options = {}) {
             peak = Math.max(peak, live);
             peakPayload = Math.max(peakPayload, payload);
             events.push(["start", id, url]);
-            await new Promise((resolve) => setTimeout(resolve, id % 3));
+            await new Promise((resolve) =>
+                setTimeout(resolve, options.latency ? options.latency(id) : id % 3),
+            );
             if (options.onFetch) options.onFetch(c, id);
             live--;
             payload -= size;
@@ -101,11 +106,18 @@ function fixture(options = {}) {
         },
     });
     const run = (text) => vm.runInContext(text, c);
-    const load = (name) => run(fs.readFileSync(path.join(__dirname, "..", name), "utf8"));
+    const load = (name) =>
+        run(
+            fs.readFileSync(
+                path.join(options.sourceRoot || path.join(__dirname, ".."), name),
+                "utf8",
+            ),
+        );
     load("lib/base.js");
     load("lib/lslot.js");
     load("background/issue-acc.js");
     run(`
+        var dbStateDefaults = {number:0,size:0};
         var config = {archive:true, archiveSubmitHTTP:true, archiveExportAs:false, archiveSaveLS:false,
             submitHTTPConcurrency:${options.concurrency || 4}, submitHTTPMemory:${options.memory || 32},
             submitHTTPParanoid:false, persistLSParanoid:false, preferIndexedDB:false, gzipLSDumps:false,
@@ -135,6 +147,8 @@ function fixture(options = {}) {
         counts: () => ({ live, peak, peakPayload, requests, removeCalls }),
     };
 }
+
+module.exports = { fixture };
 
 test("bounded HTTP-only batches acknowledge before cleanup, preserve counters and metadata", async () => {
     const f = fixture();
@@ -252,6 +266,41 @@ test("higher-priority scheduler work runs after the bounded batch", async () => 
     assert.equal(f.counts().requests, 4);
     assert.equal(f.run("reqresQueue.length"), 4);
     assert.equal(f.counts().live, 0);
+});
+
+test("failure permutations conserve every capture and keep local counters consistent", async () => {
+    for (let seed = 0; seed < 32; seed++) {
+        let failedSet = false;
+        const f = fixture({
+            count: 8,
+            concurrency: 1 + (seed % 4),
+            httpFailure: seed % 2 === 0 ? seed % 8 : undefined,
+            networkFailure: seed % 5 === 0 ? (seed + 1) % 8 : undefined,
+            failRemove: seed % 3 === 0,
+            latency: (id) => (seed * 17 + id * 7) % 4,
+            beforeSet() {
+                if (seed % 7 === 0 && !failedSet) {
+                    failedSet = true;
+                    throw Error("injected metadata-write failure");
+                }
+            },
+        });
+        await f.run("processArchiving()");
+        const discovered = await f.run(`(async()=>{
+            const ids=[];
+            await forEachInStorage('stash',l=>{ids.push(l.dumpId);return true;});
+            return ids;
+        })()`);
+        for (let id = 0; id < 8; id++) {
+            assert(
+                f.acknowledged.has(id) || (f.db[`lsdata-dump-${id}`] && discovered.includes(id)),
+                `seed ${seed}: capture ${id} unavailable locally and remotely`,
+            );
+        }
+        const localCount = Object.keys(f.db).filter((k) => k.startsWith("lsdata-stash-")).length;
+        assert.equal(f.run("state.stashedLS.number"), localCount, `seed ${seed}: stash counter`);
+        assert.equal(f.counts().live, 0, `seed ${seed}: outstanding upload`);
+    }
 });
 
 test("local storage transaction reads its writes and allocates distinct slots in a batch", async () => {
