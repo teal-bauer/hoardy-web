@@ -1,4 +1,16 @@
-# Popup layout regression tests
+# Popup regression tests
+
+Counter formatting and exact-value tooltips can be tested with Node.js alone:
+
+```sh
+node --test extension/tests/counter-format.test.cjs
+```
+
+These tests run the formatting and update functions extracted from `popup.js`.
+They check that formatting preserves raw counters, tooltip values retain their
+precision, compressed storage sizes use the appropriate unit label.
+
+## Layout
 
 Build the Firefox template using the existing toolchain:
 

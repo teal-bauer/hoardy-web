@@ -58,6 +58,7 @@ async function geometry(page) {
             scheduled: rect("div-stats.scheduled_actions"),
             saved: rect("div-stats.saved"),
             queued: rect("div-stats.queued_failed"),
+            failed: rect("div-stats.failed"),
             stashed: rect("div-stats.stashed"),
         };
     });

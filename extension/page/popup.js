@@ -82,6 +82,8 @@ function showTab(name) {
 }
 
 function present(obj) {
+    // Keep raw counters available for exact-value tooltips and other consumers.
+    obj = { ...obj };
     for (let [k, v] of Object.entries(obj)) {
         let typ = typeof v;
         if (typ === "number") {
@@ -505,6 +507,17 @@ async function popupMain() {
         }
 
         setUI(document, name, present(stats));
+        for (let [key, value] of Object.entries(stats)) {
+            let node = document.getElementById(`${name}.${key}`);
+            if (node !== null && typeof value === "number") {
+                let unit = key.endsWith("_size")
+                    ? key === "dumped_real_size"
+                        ? " bytes stored"
+                        : " bytes before compression"
+                    : "";
+                node.title = value.toLocaleString() + unit;
+            }
+        }
 
         return stats;
     }
